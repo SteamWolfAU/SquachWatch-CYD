@@ -325,6 +325,19 @@ static void drawCrashCard(TFT_eSPI& t) {
 #include "ui_desk.h"
 #include "ui_zone.h"
 #include "ui_wifinets.h"
+#if SQW_LOG_SHARE
+#include "log_share.h"
+#include "ui_logshare.h"
+#endif
+// SHARE LOGS holds the WiFi radio the way an update does: nothing else may
+// rest it, scan with it or call it deaf while it is serving.
+static inline bool logShareActive() {
+#if SQW_LOG_SHARE
+    return LogShare::active();
+#else
+    return false;
+#endif
+}
 #include "flood_bench.h"
 #include "ui_boot.h"
 #include "ui_clear.h"
@@ -2653,6 +2666,24 @@ static void enterWifiNets() {
     transitionStart = millis();
     uiWifiNetsInit(*canvas);
 }
+#if SQW_LOG_SHARE
+// SHARE LOGS, from the SYSTEM page. Detection is paused first, as for an
+// update; loop() starts it again whenever the share ends, by STOP, a timeout
+// or the lock.
+static bool s_logShareOn = false;
+static void enterLogShare() {
+    engine.startUpdateRadio();
+    if (!LogShare::begin(millis())) {
+        engine.stopUpdateRadio();
+        Theme::showToast("CAN'T SHARE", LogShare::whyNot(), Theme::AMBER);
+        return;
+    }
+    s_logShareOn = true;
+    state = AppState::LOG_SHARE;
+    transitionStart = millis();
+    uiLogShareInit(*canvas);
+}
+#endif
 static void enterWifiAdd() {
     state = AppState::WIFI_ADD;
     transitionStart = millis();
@@ -3021,7 +3052,7 @@ static void loraRadioTick(uint32_t now) {
     static uint32_t triedAt = 0;
     const uint8_t mode = Settings::loraDetect();
     bool want = mode == 2 || (mode == 1 && onLoraPage());
-    if (state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF || onRawScanScreen()) want = false;
+    if (state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF || logShareActive() || onRawScanScreen()) want = false;
     if (want) {
         if (engine.radiosResting()) return;
         if (now - triedAt < 1000) return;                  // a refusal tries again in a second
@@ -3788,7 +3819,7 @@ static void twatchRadioTick(uint32_t now) {
     // few seconds, so WiFi never got a rest at home.
     const bool alerting = (state == AppState::WATCH_ALERT);
     const bool wantOn = duty == 0 || (!g_consoleRadioTest && (usb || !s_panelAsleep)) || alerting ||
-                        state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF;
+                        state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF || logShareActive();
     uint32_t onMs = 5000, offMs = 25000;
     if (duty == 2) { onMs = 10000; offMs = 50000; }
     if (wantOn) {
@@ -3865,7 +3896,7 @@ static bool bleShouldHear() {
     // Resting with Bluetooth off (the 5/30 and 10/60 duties), a raw scan, an
     // update: none of those are the radio's fault.
     if (s_radiosResting && Settings::radioDuty() != 3) return false;
-    if (onRawScanScreen() || state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF) return false;
+    if (onRawScanScreen() || state == AppState::UPDATE || OtaWifi::state() != OtaWifi::State::OFF || logShareActive()) return false;
     return true;
 }
 static void twatchRadioHealTick(uint32_t now) {
@@ -6107,6 +6138,18 @@ void loop() {
     OtaCore::tick(now);
     OtaBle::tick(now);
     OtaWifi::tick(now);
+#if SQW_LOG_SHARE
+    LogShare::tick(now);
+    if (s_logShareOn && !LogShare::active()) {
+        s_logShareOn = false;
+        engine.stopUpdateRadio();
+        if (state == AppState::LOG_SHARE) {
+            if (LogShare::endedByTimeout()) Theme::showToast("SHARING STOPPED", "Timed out", Theme::CYAN);
+            enterSettings();
+            uiSettingsOpenPage(SettingsPage::SYSTEM);
+        }
+    }
+#endif
     if (state == AppState::CLEAR) {
         const char* sub = nullptr;
         bool good = false;
@@ -8151,6 +8194,9 @@ void loop() {
                         case SettingsRow::CHECK_COLORS: enterColorCheck(true); break;
                         case SettingsRow::DIAGNOSTICS:  enterDiagnostics(); break;
                         case SettingsRow::WIFI_NETWORKS: enterWifiNets(); break;
+#if SQW_LOG_SHARE
+                        case SettingsRow::SHARE_LOGS:   enterLogShare(); break;
+#endif
                         case SettingsRow::DESK_MODE:    uiSettingsOpenPage(SettingsPage::DESK); break;
                         case SettingsRow::DESK_OPEN:
                             // Settings' BACK from the desk comes back to it;
@@ -8499,6 +8545,17 @@ void loop() {
             }
             break;
         }
+#if SQW_LOG_SHARE
+        case AppState::LOG_SHARE: {
+            // Sharing owns the screen, as an update does: no dimming and no
+            // auto-lock under it. Its own timers stop it (log_share.h).
+            lastTouch = now;
+            drawTwoBand([&](TFT_eSPI& t, bool) { uiLogShareTick(t, now); });
+            if (touchJustDown && uiLogShareHit(*canvas, tp.x, tp.y) == LogShareHit::STOP)
+                LogShare::end();   // loop() resumes detection and leaves, next pass
+            break;
+        }
+#endif
         case AppState::WIFI_ADD: {
             drawTwoBand([&](TFT_eSPI& t, bool) { uiWifiAddTick(t, now, engine); });
             if (touchJustDown) {
