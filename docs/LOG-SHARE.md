@@ -56,9 +56,14 @@ Tap **STOP** when you're done. Detection starts again straight away.
 
 ## On the 3.5" (cyd35-fast)
 
-The SD card has not mounted on any 3.5" tested so far (see sd_log.cpp), so
-there the page usually offers `blackbox.csv` alone. That is still the whole
-detection history the board keeps: about 1,800 sightings and its boots.
+The SD slot is on its own SPI bus (pins 18/19/23, CS 5), so the card mounts
+and its logs are offered alongside `blackbox.csv`.
+
+The WiFi stack needs more memory than the 3.5" has spare with its screen
+buffer allocated, so the buffer is handed over while sharing runs: the
+share screen redraws without it and may flicker. When sharing stops the
+buffer can't be taken back in one piece, so the board **restarts** (a few
+seconds; nothing is lost).
 
 ## One catch
 

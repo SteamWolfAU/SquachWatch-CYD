@@ -2671,9 +2671,48 @@ static void enterWifiNets() {
 // update; loop() starts it again whenever the share ends, by STOP, a timeout
 // or the lock.
 static bool s_logShareOn = false;
+// The 3.5"'s half-height frame (~77 KB) is lent to the share. With the SD
+// card mounted that board runs at ~22 KB free and a 3 KB largest block, and
+// the WiFi driver and TCP stack take every packet from the heap: the login
+// prompt went out, the page after it never did. The screen draws straight to
+// the panel meanwhile, the fallback a failed rotate already uses. On the way
+// out the frame comes back, or, if the heap will not give 77 KB in one piece
+// again, the board restarts rather than run unbuffered until it does.
+static bool s_shareFrameLent = false;
+static void lendFrameToShare() {
+#if defined(CYD35)
+    if (!frameBufferOk || !frame.created()) return;
+    FramePush::asyncWait();                   // the push task may still be reading it
+    frame.deleteSprite();
+    frameBufferOk = false;
+    s_shareFrameLent = true;
+    tft.fillScreen(Theme::BG);
+    Serial.printf("[share] frame buffer lent: largest block %lu\n",
+                  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
+}
+static void restoreFrameFromShare() {
+#if defined(CYD35)
+    if (!s_shareFrameLent) return;
+    s_shareFrameLent = false;
+    frame.setColorDepth(8);
+    if (frame.createSprite(tft.width(), tft.height() / 2)) {
+        frame.setTextSize(1);
+        frameBufferOk = true;
+        Serial.println("[share] frame buffer back");
+        return;
+    }
+    Serial.printf("[share] frame buffer could not come back (largest block %lu): restarting\n",
+                  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    serialFlush();
+    ESP.restart();
+#endif
+}
 static void enterLogShare() {
     engine.startUpdateRadio();
+    lendFrameToShare();
     if (!LogShare::begin(millis())) {
+        restoreFrameFromShare();
         engine.stopUpdateRadio();
         Theme::showToast("CAN'T SHARE", LogShare::whyNot(), Theme::AMBER);
         return;
@@ -6142,6 +6181,7 @@ void loop() {
     LogShare::tick(now);
     if (s_logShareOn && !LogShare::active()) {
         s_logShareOn = false;
+        restoreFrameFromShare();
         engine.stopUpdateRadio();
         if (state == AppState::LOG_SHARE) {
             if (LogShare::endedByTimeout()) Theme::showToast("SHARING STOPPED", "Timed out", Theme::CYAN);
@@ -8550,7 +8590,22 @@ void loop() {
             // Sharing owns the screen, as an update does: no dimming and no
             // auto-lock under it. Its own timers stop it (log_share.h).
             lastTouch = now;
-            drawTwoBand([&](TFT_eSPI& t, bool) { uiLogShareTick(t, now); });
+            if (frameBufferOk) {
+                drawTwoBand([&](TFT_eSPI& t, bool) { uiLogShareTick(t, now); });
+            } else {
+                // Straight to the panel (the 3.5" lends its frame to the
+                // share): a full repaint every frame would flicker, so only
+                // when something on it changes -- at most once a second.
+                static uint32_t lastKey = 0xFFFFFFFFUL;
+                const uint32_t key = ((uint32_t)LogShare::state() << 28) |
+                                     ((uint32_t)(LogShare::requests() & 0xFFF) << 16) |
+                                     (LogShare::secondsLeft(now) & 0xFFFF) |
+                                     (LogShare::state() == LogShare::State::JOINING ? (now / 400) % 4 : 0);
+                if (key != lastKey) {
+                    uiLogShareTick(*canvas, now);
+                    lastKey = key;
+                }
+            }
             if (touchJustDown && uiLogShareHit(*canvas, tp.x, tp.y) == LogShareHit::STOP)
                 LogShare::end();   // loop() resumes detection and leaves, next pass
             break;

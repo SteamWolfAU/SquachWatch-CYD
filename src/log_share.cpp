@@ -18,6 +18,7 @@ namespace LogShare {
 namespace {
 
 const uint32_t JOIN_MS     = 15000;   // per saved network
+const uint32_t JOIN_GRACE_MS = 3000;  // a failure status before this is stale
 const uint8_t  BAD_AUTH_MAX = 5;
 const uint32_t FAILED_MS   = 60000;   // a failure stays on screen this long, then leaves by itself
 const char*    USER        = "squach";
@@ -240,7 +241,10 @@ void tick(uint32_t now) {
     if (s_state == State::JOINING) {
         const wl_status_t st = WiFi.status();
         if (st == WL_CONNECTED) startServer(now);
-        else if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL || now - s_joinAt > JOIN_MS) joinNext(now);
+        // Just after begin() the status can still be a failure left over
+        // from before; give the join a moment before believing one.
+        const bool failed = (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) && now - s_joinAt > JOIN_GRACE_MS;
+        if (failed || now - s_joinAt > JOIN_MS) joinNext(now);
         return;
     }
     if (s_state == State::FAILED) {
