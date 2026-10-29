@@ -206,7 +206,11 @@ void SdLog::openDaily() {
 }
 
 void SdLog::logEvent(const Detection& d) {
-    if (!_ready) return;
+    logEvents(&d, 1, 0, 1);
+}
+
+void SdLog::logEvents(const Detection* ring, uint8_t cap, uint8_t from, uint8_t n) {
+    if (!_ready || !n) return;
     // The card shares the panel's SPI bus on the boards that have it there;
     // on the C5 the push runs in a task, so the write waits for a frame in
     // flight (a no-op everywhere else).
@@ -235,18 +239,21 @@ void SdLog::logEvent(const Detection& d) {
         return;
     }
     char line[SdRow::ROW_MAX];
+    for (uint8_t i = 0; i < n; i++) {
+        const Detection& d = ring[(from + i) % cap];
 #if defined(CYD_GPS)
-    // Where the board is now. The queue drains on the loop task within a
-    // frame or two of the detection, so this is where it was seen.
-    SdRow::line(line, sizeof(line), d,
-                Clock::trusted() ? Clock::nowEpoch() : 0, millis(),
-                &Gnss::fix(), Gnss::faked(), millis());
+        // Where the board is now. The queue drains on the loop task within a
+        // frame or two of the detection, so this is where it was seen.
+        SdRow::line(line, sizeof(line), d,
+                    Clock::trusted() ? Clock::nowEpoch() : 0, millis(),
+                    &Gnss::fix(), Gnss::faked(), millis());
 #else
-    SdRow::line(line, sizeof(line), d,
-                Clock::trusted() ? Clock::nowEpoch() : 0, millis(),
-                nullptr, false, 0);
+        SdRow::line(line, sizeof(line), d,
+                    Clock::trusted() ? Clock::nowEpoch() : 0, millis(),
+                    nullptr, false, 0);
 #endif
-    f.print(line);
+        f.print(line);
+    }
     f.close();
     FramePush::busUnlock();
 }
