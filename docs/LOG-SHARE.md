@@ -34,6 +34,10 @@ curl.exe -u squach:123456 -o today.log "http://192.168.1.50/f?n=squachwatch-2026
 
 Tap **STOP** when you're done. Detection starts again straight away.
 
+While it's on the network it also asks a time server for the time, as the
+boot update check does, so the clock and the SD log's dates are right even
+with **UPDATE CHECK** off.
+
 ## What guards it
 
 - The board has to be unlocked to start sharing, so the PIN is needed when

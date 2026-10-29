@@ -4,6 +4,7 @@
 #include "ota_wifi.h"
 #include "security.h"
 #include "blackbox.h"
+#include "clock.h"
 #include "frame_push.h"   // busLock(): the card can share the panel's bus
 #include <Arduino.h>
 #include <WiFi.h>
@@ -183,6 +184,19 @@ void handleBlackBox() {
 }
 
 void startServer(uint32_t now) {
+    // On the network anyway, so the clock rides along, as it does on the boot
+    // check: a board kept on the release it was flashed with, UPDATE CHECK
+    // off, otherwise only learns the time over serial. One NTP request,
+    // usually a couple of hundred ms; the cap is for a bad day.
+    {
+        const uint32_t t0 = millis();
+        Clock::syncWait(2000);   // true whenever the clock is set at all, so not proof of an answer
+        char clk[24];
+        Clock::formatClock(clk, sizeof clk);
+        Serial.printf("[share] asked a time server: %lu ms, clock now %s (%s)\n",
+                      (unsigned long)(millis() - t0), clk, Clock::trusted() ? "trusted" : "not trusted");
+        now = millis();
+    }
     snprintf(s_addr, sizeof s_addr, "%s", WiFi.localIP().toString().c_str());
     snprintf(s_code, sizeof s_code, "%06lu", (unsigned long)(esp_random() % 1000000UL));
     s_srv = new WebServer(80);
